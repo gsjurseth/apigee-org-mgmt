@@ -1,0 +1,23 @@
+{
+  "name": "apigee-org-mgmt",
+  "version": "0.0.8",
+  "description": "Mangement library for apigee organizations",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gsjurseth/apigee-org-mgmt.git"
+  },
+  "keywords": [
+    "apigee",
+    "administration"
+  ],
+  "author": "Geir Sjurseth <geir.sjurseth@gmail.com> (http://gsjurseth.blogspot.com)",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/gsjurseth/apigee-org-mgmt/issues"
+  },
+  "homepage": "https://github.com/gsjurseth/apigee-org-mgmt"
+}
