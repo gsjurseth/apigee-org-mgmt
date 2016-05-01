@@ -4,6 +4,7 @@ var jf      = require('jsonfile'),
   _         = require('lodash'),
   S         = require('string'),
   log4js    = require('log4js'),
+  promise   = require('bluebird'),
   async     = require('async');
 
 
@@ -11,18 +12,23 @@ var jf      = require('jsonfile'),
 var logger;
 var orgUrl;
 var reqOpts;
-var orgList = ['environments','apiproducts','developers','companies','apps','keyvaluemaps'];
-var envList = ['apis','developers','keyvaluemaps'];
 var devHash = {};
 
-function ApigeeMGMT(opts) {
+var ApigeeMGMT = function(opts) {
     reqOpts = opts.reqOpts;
     orgUrl  = opts.orgUrl;
+    this.defaultList = ['environments','apiproducts','developers','companies'];
+
+    this.foo = "I am foo";
+
     logger  = log4js.getLogger();
     logger.setLevel( opts.debugLevel );
 
     logger.trace( 'Here are the options we got: %s', util.inspect(opts) );
-}
+
+    // set a default and empty result set for our live data
+    this.liveData = [];
+};
 
 ApigeeMGMT.prototype.fetchVirtualhosts = function( env, callback ) {
    this.fetchPath( 'environments/' + env + '/virtualhosts/', callback );
@@ -40,11 +46,27 @@ ApigeeMGMT.prototype.fetchKeystores = function( env, callback ) {
    this.fetchPath( 'environments/' + env + '/keystores/', callback );
 };
 
+ApigeeMGMT.prototype.fetchTargetservers = function( env, callback ) {
+   this.fetchPath( 'environments/' + env + '/targetservers/', callback );
+};
+
 ApigeeMGMT.prototype.listEnvironments = function( callback ) {
    this.fetchResource( 'environments/', callback );
 };
 
-ApigeeMGMT.prototype.fetcEnvironment = function( env, callback ) {
+ApigeeMGMT.prototype.listDevelopers = function( callback ) {
+   this.fetchResource( 'developers/', callback );
+};
+
+ApigeeMGMT.prototype.listCompanies = function( callback ) {
+   this.fetchResource( 'companies/', callback );
+};
+
+ApigeeMGMT.prototype.fetchEnvironments = function( callback ) {
+   this.fetchPath( 'environments/', callback );
+};
+
+ApigeeMGMT.prototype.fetchEnvironment = function( env, callback ) {
    this.fetchPath( 'environments/' + env, callback );
 };
 
@@ -63,89 +85,302 @@ ApigeeMGMT.prototype.fetchDevelopers = function( callback ) {
 // support fetching both company and developer apps
 // @param type for developer or company
 ApigeeMGMT.prototype.fetchApps = function( type,name,callback ) {
-   this.fetchPath( type + '/' + name, callback );
+   this.fetchPath( type + '/' + name + '/apps/', callback );
 };
 
-ApigeeMGMT.prototype.fetchAll = function( cb ) {
+ApigeeMGMT.prototype.addData = function(e,r) {
+  console.log("This is this: %s", util.inspect(this.liveData) );
+  if (e) {
+    logger.error('Failed fetching data: %s', util.inspect(e) );
+  }
+  else {
+    this.liveData.push(r);
+  }
+};
+
+ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
   var self=this;
-  async.series([
-    //Use a map to fetch all those things directly under the org path
-    function(acb) {
-      async.map( orgList,
-        function(i,dcb) {
-          self.fetchPath( i + '/', dcb);
-        },
-        function(err,res) {
-          if (err) {
-            logger.error("failure here: %s", err);
-          }
-          else {
-            acb(null,res);
-          }
-        }
-      );
-    },
-    //environments waterfall -> descends into vhosts, caches, etc
-    function(acb) {
-      async.waterfall( [
-        function(bcb) {
-          self.fetchEnvironments(bcb);
-        },
-        function(envs,bcb) {
-          async.map( envs.result,
-          function(env,bcb) {
-            async.parallel([
-              function(callback) {
-                self.fetchCaches(env, callback);
-              },
-              function(callback) {
-                self.fetchKeystores(env, callback);
-              },
-              function(callback) {
-                self.fetchKeyvaluemaps(env, callback);
-              },
-              function(callback) {
-                self.fetchVirtualhosts(env, callback);
-              }
-            ],
-            function(e,r) {
-              if (e) {
-                console.error( "We failed: %s", util.inspect(e) );
-                bcb(e);
-              }
-              else {
-                bcb(null,r);
-              }
-            });
-          },
-          function(err,res) {
-            if (err) {
-              logger.error("we failed here: %s", err);
+  var todoList = list ? list : this.defaultList;
+  async.parallel([
+    // apiproducts
+    function(parallelCB) {
+      if ( _.indexOf(todoList,'apiproducts' != -1) ) {
+        self.fetchProducts(
+          function(e,r) {
+            if (e) {
+              logger.error('Failed fetching data: %s', util.inspect(e) );
+              parallelCB(e);
             }
             else {
-              bcb(null,res);
+              self.liveData = _.concat(self.liveData, r);
+              parallelCB(null,'done');
             }
-          });
-        }
-      ],
-      function(err,res) {
-        if (err) {
-          logger.error('We failed: %s', err);
-        }
-        else {
-          acb(null,res);
-        }
-      });
-    }],
-    function(err,res) {
-      if (err) {
-        logger.error("We failed: %s ", err);
+          }
+        );
       }
       else {
-        cb(null,_.flatten(res));
+        parallelCB(null);
       }
-    }
-  );
+    },
+    // developers
+    function(parallelCB) {
+      if ( _.indexOf(todoList,'developers' != -1) ) {
+        self.fetchDevelopers(
+          function(e,r) {
+            if (e) {
+              logger.error('Failed fetching data: %s', util.inspect(e) );
+              parallelCB(e);
+            }
+            else {
+              self.liveData = _.concat(self.liveData, r);
+              parallelCB(null,'done');
+            }
+          }
+        );
+      }
+      else {
+        parallelCB(null);
+      }
+    },
+    // developer apps
+    function(parallelCB) {
+      if ( _.indexOf(todoList,'developers' != -1) ) {
+        async.waterfall([
+          function(wfCB) {
+            self.listDevelopers(wfCB);
+          },
+          function(devs,wfCB) {
+            async.map(devs.result,
+              function(dev,mapCB) {
+                self.fetchApps('developers', encodeURIComponent(dev), function(e,r) {
+                  if (e) {
+                    logger.error('Failed fetching data: %s', util.inspect(e) );
+                    mapCB(e);
+                  }
+                  else {
+                    self.liveData = _.concat(self.liveData, r);
+                    mapCB(null,'done');
+                  }
+                })
+              },
+              function(e,r) {
+                if (e) {
+                  wfCB(e);
+                }
+                else {
+                  wfCB(null);
+                }
+              }
+            );
+          }
+        ],
+        function(e,r) {
+          if (e) {
+            parallelCB(e);
+          }
+          else {
+            parallelCB(null);
+          }
+        });
+      }
+      else {
+        parallelCB(null);
+      }
+    },
+    // companies
+    function(parallelCB) {
+      if ( _.indexOf(todoList,'companies' != -1) ) {
+        self.fetchCompanies(
+          function(e,r) {
+            if (e) {
+              logger.error('Failed fetching data: %s', util.inspect(e) );
+              parallelCB(e);
+            }
+            else {
+              self.liveData = _.concat(self.liveData, r);
+              parallelCB(null,'done');
+            }
+          }
+        );
+      }
+      else {
+        parallelCB(null);
+      }
+    },
+    // company apps
+    function(parallelCB) {
+      if ( _.indexOf(todoList,'companies' != -1) ) {
+        async.waterfall([
+          function(wfCB) {
+            self.listCompanies(wfCB);
+          },
+          function(devs,wfCB) {
+            async.map(devs.result,
+              function(dev,mapCB) {
+                self.fetchApps('companies', encodeURIComponent(dev), function(e,r) {
+                  if (e) {
+                    logger.error('Failed fetching data: %s', util.inspect(e) );
+                    mapCB(e);
+                  }
+                  else {
+                    self.liveData = _.concat(self.liveData, r);
+                    mapCB(null,'done');
+                  }
+                })
+              },
+              function(e,r) {
+                if (e) {
+                  wfCB(e);
+                }
+                else {
+                  wfCB(null);
+                }
+              }
+            );
+          }
+        ],
+        function(e,r) {
+          if (e) {
+            parallelCB(e);
+          }
+          else {
+            parallelCB(null);
+          }
+        });
+      }
+      else {
+        parallelCB(null);
+      }
+    },
+    // environments
+    function(parallelCB) {
+      if ( _.indexOf(todoList,'environments' != -1) ) {
+        self.fetchEnvironments(
+          function(e,r) {
+            if (e) {
+              logger.error('Failed fetching data: %s', util.inspect(e) );
+              parallelCB(e);
+            }
+            else {
+              self.liveData = _.concat(self.liveData, r);
+              parallelCB(null,'done');
+            }
+          }
+        );
+      }
+      else {
+        parallelCB(null);
+      }
+    },
+    // environments stuff: virtualhosts, targetservers, keyvaluemaps, and keystores
+    function(parallelCB) {
+      if ( _.indexOf(todoList,'environments' != -1) ) {
+        async.waterfall([
+          function(wfCB) {
+            self.listEnvironments(wfCB);
+          },
+          function(envs,wfCB) {
+            async.map(envs.result,
+              function(env,mapCB) {
+                async.parallel([
+                  function(pCB) {
+
+                    self.fetchVirtualhosts(env, function(e,r) {
+                      if (e) {
+                        logger.error('Failed fetching data: %s', util.inspect(e) );
+                        pCB(e);
+                      }
+                      else {
+                        self.liveData = _.concat(self.liveData, r);
+                        pCB(null,'done');
+                      }
+                    });
+                  },
+                  function(pCB) {
+                    self.fetchCaches(env, function(e,r) {
+                      if (e) {
+                        logger.error('Failed fetching data: %s', util.inspect(e) );
+                        pCB(e);
+                      }
+                      else {
+                        self.liveData = _.concat(self.liveData, r);
+                        pCB(null,'done');
+                      }
+                    });
+                  },
+                  function(pCB) {
+                    self.fetchKeyvaluemaps(env, function(e,r) {
+                      if (e) {
+                        logger.error('Failed fetching data: %s', util.inspect(e) );
+                        pCB(e);
+                      }
+                      else {
+                        self.liveData = _.concat(self.liveData, r);
+                        pCB(null,'done');
+                      }
+                    });
+                  },
+                  function(pCB) {
+                    self.fetchKeystores(env, function(e,r) {
+                      if (e) {
+                        logger.error('Failed fetching data: %s', util.inspect(e) );
+                        pCB(e);
+                      }
+                      else {
+                        self.liveData = _.concat(self.liveData, r);
+                        pCB(null,'done');
+                      }
+                    });
+                  },
+                  function(pCB) {
+                    self.fetchTargetservers(env, function(e,r) {
+                      if (e) {
+                        logger.error('Failed fetching data: %s', util.inspect(e) );
+                        pCB(e);
+                      }
+                      else {
+                        self.liveData = _.concat(self.liveData, r);
+                        pCB(null,'done');
+                      }
+                    });
+                  }
+                ],
+                function(e,r) {
+                  if (e) {
+                    mapCB(e);
+                  }
+                  else {
+                    mapCB(null);
+                  }
+                });
+              },
+              function(e,r) {
+                if (e) {
+                  wfCB(e);
+                }
+                else {
+                  wfCB(null);
+                }
+              }
+            );
+          }
+        ],
+        function(e,r) {
+          if (e) {
+            parallelCB(e);
+          }
+          else {
+            parallelCB(null);
+          }
+        });
+      }
+      else {
+        parallelCB(null);
+      }
+    },
+  ],function(e,r) {
+      cb(null,self.liveData);
+  });
 };
 
 ApigeeMGMT.prototype.fetchPath = function( relPath,cb ) {
