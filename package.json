@@ -22,17 +22,10 @@
   "homepage": "https://github.com/gsjurseth/apigee-org-mgmt",
   "dependencies": {
     "async": "^0.9.0",
-    "bluebird": "^3.3.5",
-    "easy-zip2": "^1.0.0",
-    "fs": "0.0.2",
-    "fstream": "^1.0.4",
     "jsonfile": "^2.0.0",
     "lodash": "^4.11.1",
     "log4js": "^0.6.24",
-    "node-getopt": "^0.2.3",
-    "read": "^1.0.5",
     "request": "^2.55.0",
-    "unzip2": "^0.2.5",
     "util": "^0.10.3"
   }
 }
