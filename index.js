@@ -4,7 +4,7 @@ var jf      = require('jsonfile'),
   _         = require('lodash'),
   S         = require('string'),
   log4js    = require('log4js'),
-  promise   = require('bluebird'),
+  path      = require('path'),
   async     = require('async');
 
 
@@ -13,6 +13,10 @@ var logger;
 var orgUrl;
 var reqOpts;
 var devHash = {};
+var theRightOrder = [
+  'environments','caches','keystores',
+  'virtualhosts','keyvaluemaps','targetservers',
+  'developers','companies','apiproducts','developerapps','companyapps'];
 
 var ApigeeMGMT = function(opts) {
     reqOpts = opts.reqOpts;
@@ -27,7 +31,12 @@ var ApigeeMGMT = function(opts) {
     logger.trace( 'Here are the options we got: %s', util.inspect(opts) );
 
     // set a default and empty result set for our live data
-    this.liveData = [];
+
+    this.liveData = {
+      environments: [],caches: [], keystores: [], virtualhosts: [],keyvaluemaps: [],
+      targetservers: [], developers: [], companies: [], apiproducts: [],
+      developerapps: [], companyapps: []
+    };
 };
 
 ApigeeMGMT.prototype.fetchVirtualhosts = function( env, callback ) {
@@ -88,23 +97,134 @@ ApigeeMGMT.prototype.fetchApps = function( type,name,callback ) {
    this.fetchPath( type + '/' + name + '/apps/', callback );
 };
 
-ApigeeMGMT.prototype.addData = function(e,r) {
-  console.log("This is this: %s", util.inspect(this.liveData) );
-  if (e) {
-    logger.error('Failed fetching data: %s', util.inspect(e) );
-  }
-  else {
-    this.liveData.push(r);
-  }
+ApigeeMGMT.prototype.updateResource = function( data,cb ) {
+  var type = data.type.replace('.json','');
+  var url = orgUrl + '/' + type;
+
+
+  reqOpts = _.extend(reqOpts, {body: JSON.stringify(data.result)});
+  reqOpts = _.extend(reqOpts, { headers: { "Content-Type" : "application/json"} });
+
+
+  request.put(
+    url,
+    reqOpts,
+    function(err, res, body) {
+      if (err) {
+        logger.error('updateResource received unexpected error while \"%s\":ing config for type: %s. Error: %s and Response: %s', 'PUT:ing',type, err, res );
+      }
+      else if ( (res.statusCode == 200) || (res.statusCode == 201) ) {
+        logger.debug('Succeeded updating: %s with statusCode: %s', type, res.statusCode );
+        cb(null, { 'type': type, result: JSON.parse(body) });
+      }
+      else {
+        logger.error('updateConfig received unexpected status code while \"%s\":ing for type: %s and statusCode: %s and with body: %s', 'PUT:ing', type, res.statusCode, body );
+      }
+  });
 };
 
-ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
+ApigeeMGMT.prototype.createResource = function( data,cb ) {
+  // for creations we also have to strip off the named resource from the end of
+  // the url
+  var type = path.dirname(data.type);
+  var url = orgUrl + '/' + type;
+
+  console.log("This is the ta-ta-type: %s", data.type);
+
+  reqOpts = _.extend(reqOpts, {body: JSON.stringify(data.result)});
+  reqOpts = _.extend(reqOpts, { headers: { "Content-Type" : "application/json"} });
+
+  request.post(
+    url,
+    reqOpts,
+    function(err, res, body) {
+      if (err) {
+        logger.error('Failed creating resource: %s with code: %s', data.type,res.statusCode);
+      }
+      else if ( (res.statusCode == 200) || (res.statusCode == 201) ) {
+        logger.debug('Succeeded updating: %s with statusCode: %s', type, res.statusCode );
+        cb(null, { 'type': type, result: JSON.parse(body) });
+      }
+      else {
+        logger.error('Unexpected response while creating resource: %s with code: %s', data.type,res.statusCode);
+      }
+  });
+};
+
+ApigeeMGMT.prototype.writeAll = function( list,fileData,cb ) {
+  var self=this;
+  async.waterfall([
+    function(wCB) {
+      self.fetchAll(this.defaultList,wCB,true);
+    },
+    function(liveData,wCB) {
+      // Now we take this liveData and make a types list array out of it
+      var liveTypesList = [];
+
+      console.log("This is the liveData: %s", util.inspect(liveData));
+      _.each(liveData,function(i) {
+        _.each(i,function(o) {
+          liveTypesList.push(o.type);
+        });
+      });
+
+      // now that we have our separated list we'll step through it in the right
+      // order
+      var listOrder =[];
+      _.each(theRightOrder, function(t) {
+        if ( _.includes(list,t) ) {
+          listOrder.push(t);
+        }
+      });
+      async.map(listOrder,
+        function(t,mCB) {
+          async.map(fileData[t], function(d,mmCB) {
+            if ( _.includes(liveTypesList,d.type) ) {
+              self.updateResource(d,mmCB);
+            }
+            else {
+              self.createResource(d,mmCB);
+            }
+          },
+          function(e,r){
+            if (e) {
+              logger.error("Failed update/creating resource: %s", util.inspect(e));
+              mCB(e);
+            }
+            else {
+              mCB(null);
+            }
+          });
+        },
+        function(e,r) {
+          if (e) {
+            logger.error("We failed handling the resource: %s", util.inspect(e));
+            wCB(e);
+          }
+          else {
+            wCB(null);
+          }
+        }
+      );
+    }
+  ],
+  function(e,r) {
+    if (e) {
+      cb(e);
+    }
+      cb(null);
+  });
+};
+
+ApigeeMGMT.prototype.fetchAll = function( list,cb,returnSplit ) {
   var self=this;
   var todoList = list ? list : this.defaultList;
+
+  logger.info("My list is: " + todoList);
   async.parallel([
     // apiproducts
     function(parallelCB) {
-      if ( _.indexOf(todoList,'apiproducts' != -1) ) {
+      if ( _.includes(todoList,'apiproducts') ) {
         self.fetchProducts(
           function(e,r) {
             if (e) {
@@ -112,7 +232,8 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
               parallelCB(e);
             }
             else {
-              self.liveData = _.concat(self.liveData, r);
+              //self.liveData.apiproducts = _.concat(self.liveData.apiproducts, r);
+              self.liveData.apiproducts = r;
               parallelCB(null,'done');
             }
           }
@@ -124,7 +245,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
     },
     // developers
     function(parallelCB) {
-      if ( _.indexOf(todoList,'developers' != -1) ) {
+      if ( _.includes(todoList,'developers' ) ) {
         self.fetchDevelopers(
           function(e,r) {
             if (e) {
@@ -132,7 +253,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
               parallelCB(e);
             }
             else {
-              self.liveData = _.concat(self.liveData, r);
+              self.liveData.developers = _.concat(self.liveData.developers, r);
               parallelCB(null,'done');
             }
           }
@@ -144,7 +265,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
     },
     // developer apps
     function(parallelCB) {
-      if ( _.indexOf(todoList,'developers' != -1) ) {
+      if ( _.includes(todoList,'developers') ) {
         async.waterfall([
           function(wfCB) {
             self.listDevelopers(wfCB);
@@ -158,7 +279,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
                     mapCB(e);
                   }
                   else {
-                    self.liveData = _.concat(self.liveData, r);
+                    self.liveData.developerapps = _.concat(self.liveData.developerapps,r);
                     mapCB(null,'done');
                   }
                 })
@@ -189,7 +310,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
     },
     // companies
     function(parallelCB) {
-      if ( _.indexOf(todoList,'companies' != -1) ) {
+      if ( _.includes(todoList,'companies') ) {
         self.fetchCompanies(
           function(e,r) {
             if (e) {
@@ -197,7 +318,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
               parallelCB(e);
             }
             else {
-              self.liveData = _.concat(self.liveData, r);
+              self.liveData.companies = r;
               parallelCB(null,'done');
             }
           }
@@ -209,7 +330,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
     },
     // company apps
     function(parallelCB) {
-      if ( _.indexOf(todoList,'companies' != -1) ) {
+      if ( _.includes(todoList,'companies') ) {
         async.waterfall([
           function(wfCB) {
             self.listCompanies(wfCB);
@@ -223,7 +344,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
                     mapCB(e);
                   }
                   else {
-                    self.liveData = _.concat(self.liveData, r);
+                    self.liveData.companyapps = _.concat(self.liveData.companyapps,r);
                     mapCB(null,'done');
                   }
                 })
@@ -254,7 +375,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
     },
     // environments
     function(parallelCB) {
-      if ( _.indexOf(todoList,'environments' != -1) ) {
+      if ( _.includes(todoList,'environments') ) {
         self.fetchEnvironments(
           function(e,r) {
             if (e) {
@@ -262,7 +383,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
               parallelCB(e);
             }
             else {
-              self.liveData = _.concat(self.liveData, r);
+              self.liveData.environments = r;
               parallelCB(null,'done');
             }
           }
@@ -274,7 +395,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
     },
     // environments stuff: virtualhosts, targetservers, keyvaluemaps, and keystores
     function(parallelCB) {
-      if ( _.indexOf(todoList,'environments' != -1) ) {
+      if ( _.includes(todoList,'environments') ) {
         async.waterfall([
           function(wfCB) {
             self.listEnvironments(wfCB);
@@ -291,7 +412,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
                         pCB(e);
                       }
                       else {
-                        self.liveData = _.concat(self.liveData, r);
+                        self.liveData.virtualhosts = _.concat(self.liveData.virtualhosts, r);
                         pCB(null,'done');
                       }
                     });
@@ -303,7 +424,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
                         pCB(e);
                       }
                       else {
-                        self.liveData = _.concat(self.liveData, r);
+                        self.liveData.caches = _.concat(self.liveData.caches, r);
                         pCB(null,'done');
                       }
                     });
@@ -315,7 +436,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
                         pCB(e);
                       }
                       else {
-                        self.liveData = _.concat(self.liveData, r);
+                        self.liveData.keyvaluemaps = _.concat(self.liveData.keyvaluemaps, r);
                         pCB(null,'done');
                       }
                     });
@@ -327,7 +448,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
                         pCB(e);
                       }
                       else {
-                        self.liveData = _.concat(self.liveData, r);
+                        self.liveData.keystores = _.concat(self.liveData.keystores, r);
                         pCB(null,'done');
                       }
                     });
@@ -339,7 +460,7 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
                         pCB(e);
                       }
                       else {
-                        self.liveData = _.concat(self.liveData, r);
+                        self.liveData.targetservers = _.concat(self.liveData.targetservers, r);
                         pCB(null,'done');
                       }
                     });
@@ -379,7 +500,16 @@ ApigeeMGMT.prototype.fetchAll = function( list,cb ) {
       }
     },
   ],function(e,r) {
-      cb(null,self.liveData);
+      if (returnSplit) {
+        cb(null,self.liveData);
+      }
+      else {
+        var theData = [];
+        _.each(Object.keys(self.liveData), function(k) {
+          theData = _.concat(theData,self.liveData[k]);
+        });
+        cb(null,theData);
+      }
   });
 };
 
@@ -400,7 +530,7 @@ ApigeeMGMT.prototype.fetchPath = function( relPath,cb ) {
             dcb(err);
           }
           else {
-            logger.trace('Should be %s: %s', relPath,util.inspect(res,true) );
+            logger.trace('Data fetched path ->  %s:  data -> %s', relPath,util.inspect(res,true) );
             dcb(null,res);
           }
         }
